@@ -145,7 +145,11 @@ fn pro_panel(ui: &mut Ui, id: &str, tabs: &[&str], selected: &mut usize, collaps
     let rounding = if collapsed { CornerRadius::same(3) } else { CornerRadius { nw: 3, ne: 3, sw: 0, se: 0 } };
     ui.painter().rect_filled(strip, rounding, t.tab_strip);
     // Panel menu (hamburger); the tabs stay left of it, eliding or overflowing (#151).
-    let menu = Rect::from_center_size(pos2(strip.right() - 14.0, strip.center().y), vec2(20.0, 18.0));
+    let menu = if cfg!(target_os = "android") {
+        Rect::from_center_size(pos2(strip.right() - 22.0, strip.center().y), vec2(40.0, 26.0))
+    } else {
+        Rect::from_center_size(pos2(strip.right() - 14.0, strip.center().y), vec2(20.0, 18.0))
+    };
     let tabs_out = crate::tab_strip::pro_tabs(ui, ui.id().with((id, "tabs")), strip, menu.left(), tabs, selected, collapsed);
     let mresp = ui.interact(menu, ui.id().with((id, "menu")), Sense::click());
     let c = if mresp.hovered() { t.text } else { t.text_faint };
@@ -749,6 +753,25 @@ fn button_layout(ui: &Ui, label: &str, min_width: f32, fg: Color32) -> (std::syn
     (galley, size)
 }
 
+/// Log Android button hit-testing only while the pointer interacts with the button.
+/// Kept out of desktop builds and silent for idle frames.
+#[cfg(target_os = "android")]
+fn diagnose_android_button(ui: &Ui, label: &str, response: &Response) {
+    let pointer = ui.input(|i| i.pointer.interact_pos());
+    let in_rect = pointer.is_some_and(|pos| response.rect.contains(pos));
+    let pressed = response.is_pointer_button_down_on();
+    let clicked = response.clicked();
+    let hovered = response.hovered();
+    let released = ui.input(|i| i.pointer.any_released());
+    let down = ui.input(|i| i.pointer.any_pressed());
+    if clicked || pressed || (in_rect && (down || released)) {
+        log::info!(
+            "SPEN_DIAG button label={label:?} clicked={clicked} hovered={hovered} pressed={pressed} enabled={} rect={:?} pointer={pointer:?} down={down} released={released}",
+            ui.is_enabled(), response.rect
+        );
+    }
+}
+
 fn button_impl(ui: &mut Ui, label: &str, min_width: f32, bg: Color32, fg: Color32, primary: bool) -> Response {
     let t = Tokens::get(ui.ctx());
     let (galley, size) = button_layout(ui, label, min_width, fg);
@@ -781,6 +804,8 @@ fn button_impl(ui: &mut Ui, label: &str, min_width: f32, bg: Color32, fg: Color3
             ui.painter().rect_stroke(rect, r, Stroke::new(1.5, if resp.hovered() { t.text } else { t.text_dim }), StrokeKind::Inside);
         }
         ui.painter().galley(rect.center() - galley.size() / 2.0, galley, fg);
+        #[cfg(target_os = "android")]
+        diagnose_android_button(ui, label, &resp);
         return resp;
     }
     let fill = if resp.is_pointer_button_down_on() {
@@ -795,6 +820,8 @@ fn button_impl(ui: &mut Ui, label: &str, min_width: f32, bg: Color32, fg: Color3
         ui.painter().rect_stroke(rect, t.radius_sm, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
     }
     ui.painter().galley(rect.center() - galley.size() / 2.0, galley, fg);
+    #[cfg(target_os = "android")]
+    diagnose_android_button(ui, label, &resp);
     resp
 }
 

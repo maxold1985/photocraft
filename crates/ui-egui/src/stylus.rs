@@ -7,6 +7,9 @@
 //!   normalised force (`POINTER_PEN_INFO::pressure / 1024`); egui-winit forwards it as
 //!   `egui::Event::Touch { force }` alongside the emulated pointer. [`Stylus::update`] reads it.
 //!   winit drops the pen's tilt and rotation, so those stay 0.
+//! - **Android**: winit forwards touch pressure; the optional NativeActivity JNI bridge
+//!   supplies tilt and eraser metadata through the feed without injecting duplicate pointers.
+//!   When the Java dispatch callback is not invoked, pressure-only input remains supported.
 //! - **Web**: eframe forwards touch force but not pen pointer events, so the web runner listens
 //!   to `pointerdown`/`pointermove` itself and writes `pressure`, `tiltX`, `tiltY`, `twist` and
 //!   the eraser button of `pointerType == "pen"` events into the [`StylusFeed`].
@@ -120,6 +123,9 @@ pub struct Stylus {
     pub(crate) tool_before_eraser: Option<crate::state::Tool>,
     /// Force of the touch/pen contact currently down (egui `Event::Touch`).
     touch: Option<f32>,
+    /// The primary contact egui-winit converts into pointer events. Secondary
+    /// fingers must not overwrite the S Pen pressure for the drawing pointer.
+    touch_id: Option<(egui::TouchDeviceId, egui::TouchId)>,
     /// The contact ended this frame: keep its force for this frame's last tool events, clear next frame.
     lifted: bool,
     /// This frame's pen samples, oldest first (the feed's queue and the touch forces).
@@ -150,6 +156,7 @@ impl Default for Stylus {
             end: None,
             tool_before_eraser: None,
             touch: None,
+            touch_id: None,
             lifted: false,
             frame: Vec::new(),
             prev: None,
@@ -181,17 +188,41 @@ impl Stylus {
             self.prev = Some(*last);
         }
         self.frame = self.feed.drain();
+        // Android's input arrives through both winit touch-force and the
+        // optional JNI pen feed. Prefer the richer pen samples when present:
+        // appending default-tilt touch samples would otherwise erase tilt
+        // interpolation and introduce a duplicate pressure reading.
+        let android_pen_feed = cfg!(target_os = "android") && !self.frame.is_empty();
         self.current = None;
         for e in events {
-            if let egui::Event::Touch { phase, force, .. } = e {
+            if let egui::Event::Touch { device_id, id, phase, force, .. } = e {
+                let contact = (*device_id, *id);
+                if *phase == egui::TouchPhase::Start && self.touch_id.is_none() {
+                    // egui-winit makes the first down contact the primary
+                    // pointer. Reset its pressure when another stroke begins.
+                    self.touch_id = Some(contact);
+                    self.touch = None;
+                    self.lifted = false;
+                }
+                if self.touch_id != Some(contact) {
+                    continue;
+                }
                 match phase {
                     egui::TouchPhase::Start | egui::TouchPhase::Move => {
                         if let Some(f) = force.filter(|f| f.is_finite()) {
-                            self.touch = Some(f.clamp(0.0, 1.0));
-                            self.frame.push(PenSample { pressure: f.clamp(0.0, 1.0), ..Default::default() });
+                            let pressure = f.clamp(0.0, 1.0);
+                            self.touch = Some(pressure);
+                            if !android_pen_feed {
+                                self.frame.push(PenSample { pressure, ..Default::default() });
+                            }
                         }
                     }
-                    egui::TouchPhase::End | egui::TouchPhase::Cancel => self.lifted = true,
+                    egui::TouchPhase::End | egui::TouchPhase::Cancel => {
+                        // Retain the release frame's final pressure for the
+                        // last dab, but never carry it into the next stroke.
+                        self.touch_id = None;
+                        self.lifted = true;
+                    }
                 }
             }
         }
@@ -203,7 +234,13 @@ impl Stylus {
         if !self.use_pressure {
             return None;
         }
-        let s = self.current.or_else(|| self.feed.get()).or(self.touch.map(|pressure| PenSample { pressure, ..Default::default() }))?;
+        // Java may deliver DOWN/MOVE/UP before a single egui frame. The
+        // feed then has no live sample, but its queued contact samples still
+        // describe the just-finished stroke. Do not lose their pressure/tilt.
+        let s = self.current
+            .or_else(|| self.feed.get())
+            .or_else(|| self.frame.last().copied())
+            .or(self.touch.map(|pressure| PenSample { pressure, ..Default::default() }))?;
         // The pen's pressure through Preferences › Tools › Pressure Curve, before any brush sees it.
         Some(match &self.pressure_curve {
             Some(c) => PenSample { pressure: c.eval(s.pressure), ..s },
@@ -345,6 +382,85 @@ impl Stylus {
     }
 }
 
+/// Repair Android touch clicks that egui-winit did not convert to pointer buttons.
+/// A missing tap is reconstructed on End, including when Start was in an earlier frame.
+/// Native pointer-button pairs are never duplicated.
+#[derive(Debug, Default)]
+pub struct AndroidTouchRecovery {
+    primary: Option<(egui::TouchDeviceId, egui::TouchId)>,
+    down_pos: Option<egui::Pos2>,
+    native_down: bool,
+}
+
+impl AndroidTouchRecovery {
+    pub fn repair(&mut self, raw: &mut egui::RawInput) {
+        let modifiers = egui::Modifiers::NONE;
+        // Inspect the whole frame before repairing it: winit may put pointer
+        // buttons before or after the corresponding touch event.
+        let native_press = raw.events.iter().any(|e| matches!(e,
+            egui::Event::PointerButton { button: egui::PointerButton::Primary, pressed: true, .. }
+        ));
+        let native_release = raw.events.iter().any(|e| matches!(e,
+            egui::Event::PointerButton { button: egui::PointerButton::Primary, pressed: false, .. }
+        ));
+        let mut out = Vec::with_capacity(raw.events.len() + 4);
+        for event in raw.events.drain(..) {
+            match &event {
+                egui::Event::Touch { device_id, id, phase: egui::TouchPhase::Start, pos, .. } => {
+                    if self.primary.is_none() {
+                        self.primary = Some((*device_id, *id));
+                        self.down_pos = Some(*pos);
+                        self.native_down = native_press;
+                    }
+                }
+                egui::Event::PointerButton { button: egui::PointerButton::Primary, pressed, .. } => {
+                    self.native_down = *pressed;
+                }
+                egui::Event::Touch { device_id, id, phase: egui::TouchPhase::End, pos, .. }
+                | egui::Event::Touch { device_id, id, phase: egui::TouchPhase::Cancel, pos, .. } => {
+                    if self.primary == Some((*device_id, *id)) {
+                        let cancelled = matches!(&event, egui::Event::Touch { phase: egui::TouchPhase::Cancel, .. });
+                        if !cancelled && !self.native_down && !native_press && !native_release {
+                            // A whole tap can span multiple render frames. Emit a
+                            // complete click at End if winit supplied no buttons.
+                            let down = self.down_pos.unwrap_or(*pos);
+                            out.push(egui::Event::PointerMoved(down));
+                            out.push(egui::Event::PointerButton {
+                                pos: down, button: egui::PointerButton::Primary,
+                                pressed: true, modifiers,
+                            });
+                            log::info!("S Pen touch recovery: synthesized missing click");
+                        }
+                        let release_pos = *pos;
+                        out.push(event);
+                        if (self.native_down || cancelled) && !native_release {
+                            // On cancellation winit can send PointerGone without
+                            // releasing the mouse-emulated primary button.
+                            out.push(egui::Event::PointerButton {
+                                pos: release_pos, button: egui::PointerButton::Primary,
+                                pressed: false, modifiers,
+                            });
+                            log::info!("S Pen touch recovery: synthesized missing release");
+                        } else if !cancelled && !self.native_down && !native_press && !native_release {
+                            out.push(egui::Event::PointerButton {
+                                pos: release_pos, button: egui::PointerButton::Primary,
+                                pressed: false, modifiers,
+                            });
+                        }
+                        self.primary = None;
+                        self.down_pos = None;
+                        self.native_down = false;
+                        continue;
+                    }
+                }
+                _ => {}
+            }
+            out.push(event);
+        }
+        raw.events = out;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -465,6 +581,131 @@ mod tests {
     }
 
     #[test]
+    fn fast_stylus_tap_without_pointer_buttons_is_clickable() {
+        let mut repair = AndroidTouchRecovery::default();
+        let mut raw = egui::RawInput {
+            events: vec![touch(egui::TouchPhase::Start, Some(0.4)),
+                         touch(egui::TouchPhase::End, None)],
+            ..Default::default()
+        };
+        repair.repair(&mut raw);
+        let buttons: Vec<bool> = raw.events.iter().filter_map(|event| match event {
+            egui::Event::PointerButton { button: egui::PointerButton::Primary, pressed, .. }
+                => Some(*pressed),
+            _ => None,
+        }).collect();
+        assert_eq!(buttons, vec![true, false]);
+    }
+
+    #[test]
+    fn tap_spanning_two_frames_recovers_click() {
+        let mut repair = AndroidTouchRecovery::default();
+        let mut down = egui::RawInput {
+            events: vec![touch(egui::TouchPhase::Start, Some(0.5))],
+            ..Default::default()
+        };
+        repair.repair(&mut down);
+        assert_eq!(down.events.len(), 1);
+        let mut up = egui::RawInput {
+            events: vec![touch(egui::TouchPhase::End, None)],
+            ..Default::default()
+        };
+        repair.repair(&mut up);
+        let buttons: Vec<bool> = up.events.iter().filter_map(|event| match event {
+            egui::Event::PointerButton { button: egui::PointerButton::Primary, pressed, .. } => Some(*pressed),
+            _ => None,
+        }).collect();
+        assert_eq!(buttons, vec![true, false]);
+    }
+
+    #[test]
+    fn native_press_and_end_without_release_gets_one_release() {
+        let mut repair = AndroidTouchRecovery::default();
+        let mut down = egui::RawInput {
+            events: vec![
+                touch(egui::TouchPhase::Start, Some(0.5)),
+                egui::Event::PointerButton {
+                    pos: egui::pos2(1.0, 1.0),
+                    button: egui::PointerButton::Primary,
+                    pressed: true, modifiers: egui::Modifiers::NONE,
+                },
+            ],
+            ..Default::default()
+        };
+        repair.repair(&mut down);
+        let mut up = egui::RawInput {
+            events: vec![touch(egui::TouchPhase::End, None)],
+            ..Default::default()
+        };
+        repair.repair(&mut up);
+        assert_eq!(up.events.iter().filter(|e| matches!(e,
+            egui::Event::PointerButton { button: egui::PointerButton::Primary, pressed: false, .. }
+        )).count(), 1);
+    }
+
+    #[test]
+    fn native_pointer_buttons_are_not_duplicated() {
+        let mut repair = AndroidTouchRecovery::default();
+        let mut raw = egui::RawInput {
+            events: vec![touch(egui::TouchPhase::Start, Some(0.4)),
+                         egui::Event::PointerButton {
+                             pos: egui::pos2(1.0, 1.0),
+                             button: egui::PointerButton::Primary,
+                             pressed: true, modifiers: egui::Modifiers::NONE,
+                         },
+                         touch(egui::TouchPhase::End, None),
+                         egui::Event::PointerButton {
+                             pos: egui::pos2(1.0, 1.0),
+                             button: egui::PointerButton::Primary,
+                             pressed: false, modifiers: egui::Modifiers::NONE,
+                         }],
+            ..Default::default()
+        };
+        repair.repair(&mut raw);
+        assert_eq!(raw.events.len(), 4);
+    }
+
+    #[test]
+    fn cancelled_primary_touch_releases_the_pointer_without_duplicate_down() {
+        let mut repair = AndroidTouchRecovery::default();
+        let start = touch(egui::TouchPhase::Start, Some(0.3));
+        let cancel = touch(egui::TouchPhase::Cancel, None);
+        let mut raw = egui::RawInput {
+            events: vec![start.clone(), egui::Event::PointerButton {
+                pos: egui::pos2(1.0, 1.0), button: egui::PointerButton::Primary,
+                pressed: true, modifiers: egui::Modifiers::NONE,
+            }],
+            ..Default::default()
+        };
+        repair.repair(&mut raw);
+        assert_eq!(raw.events.len(), 2, "normal presses already arrive from winit");
+        raw.events = vec![cancel.clone(), egui::Event::PointerGone];
+        repair.repair(&mut raw);
+        assert_eq!(raw.events.len(), 3);
+        assert!(matches!(raw.events.get(1), Some(egui::Event::PointerButton {
+            button: egui::PointerButton::Primary, pressed: false, ..
+        })), "release must precede PointerGone");
+        raw.events = vec![cancel, egui::Event::PointerGone];
+        repair.repair(&mut raw);
+        assert_eq!(raw.events.len(), 2, "do not release the same contact twice");
+    }
+
+    #[test]
+    fn cancelling_a_secondary_finger_never_releases_the_primary_pointer() {
+        let mut repair = AndroidTouchRecovery::default();
+        let secondary = egui::Event::Touch {
+            device_id: egui::TouchDeviceId(1), id: egui::TouchId(42),
+            phase: egui::TouchPhase::Cancel, pos: egui::pos2(2.0, 2.0), force: None,
+        };
+        let mut raw = egui::RawInput {
+            events: vec![touch(egui::TouchPhase::Start, Some(0.2)), secondary],
+            ..Default::default()
+        };
+        repair.repair(&mut raw);
+        assert_eq!(raw.events.len(), 2);
+    }
+
+    #[test]
     fn mouse_is_full_pressure() {
         let mut s = Stylus::default();
         s.update(&[egui::Event::PointerMoved(egui::pos2(3.0, 4.0))]);
@@ -488,6 +729,47 @@ mod tests {
         assert_eq!(s.pressure(), 0.4);
         s.update(&[]);
         assert_eq!(s.pressure(), 1.0);
+    }
+
+    #[test]
+    fn secondary_finger_does_not_change_primary_pen_pressure() {
+        let mut s = Stylus::default();
+        let with_id = |id: u64, phase, force| egui::Event::Touch {
+            device_id: egui::TouchDeviceId(1),
+            id: egui::TouchId(id),
+            phase,
+            pos: egui::pos2(id as f32, 1.0),
+            force,
+        };
+        s.update(&[
+            with_id(3, egui::TouchPhase::Start, Some(0.2)),
+            with_id(4, egui::TouchPhase::Start, Some(0.9)),
+            with_id(4, egui::TouchPhase::Move, Some(0.8)),
+        ]);
+        assert_eq!(s.pressure(), 0.2, "secondary finger must not replace the primary pen pressure");
+        s.update(&[with_id(4, egui::TouchPhase::End, None)]);
+        assert_eq!(s.pressure(), 0.2, "lifting another finger must not end the stroke");
+        s.update(&[with_id(3, egui::TouchPhase::Move, Some(0.4))]);
+        assert_eq!(s.pressure(), 0.4);
+        s.update(&[with_id(3, egui::TouchPhase::End, None)]);
+        s.update(&[]);
+        assert_eq!(s.pressure(), 1.0);
+    }
+
+    #[test]
+    fn java_contact_finished_within_one_frame_keeps_pen_pressure_and_tilt() {
+        let mut s = Stylus::default();
+        s.feed.set(Some(PenSample { pressure: 0.35, tilt_x: 21.0, ..pen(1.0) }));
+        s.feed.set(Some(PenSample { pressure: 0.75, tilt_x: 29.0, ..pen(1.0) }));
+        s.feed.set(None);
+        s.update(&[]);
+        assert_eq!(s.pressure(), 0.75, "up before the render frame must not discard pressure");
+        s.select(0, 2);
+        assert!((s.pressure() - 0.35).abs() < 1e-6);
+        assert_eq!(s.sample().map(|p| p.tilt_x), Some(21.0));
+        s.clear_selection();
+        s.update(&[]);
+        assert_eq!(s.pressure(), 1.0, "completed contact is cleared next frame");
     }
 
     #[test]
