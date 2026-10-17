@@ -5123,8 +5123,44 @@ fn tool_move(app: &mut PhotocraftApp, x: f64, y: f64, pressure: f32, mods: egui:
     }
 }
 
+/// Opt-in diagnostics for tablet strokes. Enable with PHOTOCRAFT_PEN_LOG=1.
+/// Writes only brush-like gestures to stderr, preserving the input unchanged.
+fn log_pen_event(app: &PhotocraftApp, ev: ToolEvent) {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if !*ENABLED.get_or_init(|| std::env::var("PHOTOCRAFT_PEN_LOG").is_ok_and(|v| v == "1")) {
+        return;
+    }
+    let tool = app.active_tool();
+    if !matches!(tool, Tool::Brush | Tool::Pencil | Tool::Eraser) {
+        return;
+    }
+    let active = app.drag.as_ref();
+    let count = active.map_or(0, |d| d.points.len());
+    let last = active.and_then(|d| d.points.last()).copied();
+    match ev {
+        ToolEvent::Down { x, y, pressure } => {
+            eprintln!("[pen-input] DOWN tool={tool:?} x={x:.2} y={y:.2} pressure={pressure:.3} previous_drag_points={count} previous_last={last:?}");
+        }
+        ToolEvent::Move { x, y, pressure } => {
+            if let Some(p) = last {
+                let distance = (x - p[0]).hypot(y - p[1]);
+                if distance > 25.0 {
+                    eprintln!("[pen-input] LARGE_MOVE tool={tool:?} x={x:.2} y={y:.2} pressure={pressure:.3} from=({:.2},{:.2}) distance={distance:.2} points={count}", p[0], p[1]);
+                }
+            } else {
+                eprintln!("[pen-input] MOVE_WITHOUT_DRAG tool={tool:?} x={x:.2} y={y:.2} pressure={pressure:.3}");
+            }
+        }
+        ToolEvent::Up { x, y } => {
+            let distance = last.map(|p| (x - p[0]).hypot(y - p[1]));
+            eprintln!("[pen-input] UP tool={tool:?} x={x:.2} y={y:.2} last={last:?} release_distance={distance:?} points={count}");
+        }
+    }
+}
+
 /// Tool state machine. Shared by mouse input and automation.
 pub fn tool_event(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers) {
+    log_pen_event(app, ev);
     // A press anywhere but on a guide deselects the selected guide (`guide_select`).
     if let ToolEvent::Down { x, y, .. } = ev
         && app.ui.selected_guide.is_some()
