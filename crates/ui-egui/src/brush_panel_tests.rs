@@ -623,7 +623,7 @@ fn hue_jitter_amount_edits_keep_percentage_units_and_command_routing() {
 #[test]
 fn checkbox_only_rows_toggle_without_changing_the_selected_controls() {
     use egui_kittest::kittest::Queryable;
-    for (section, &(name, _)) in SECTIONS.iter().enumerate().skip(8) {
+    for (section, &(name, _)) in SECTIONS.iter().enumerate().skip(8).filter(|(i, _)| *i != 11) {
         let mut h = harness(0, 1);
         let before = toggle_value(h.state(), section);
         let n = h.state().session.journal.len();
@@ -683,6 +683,15 @@ fn checkbox_only_rows_cannot_restore_an_empty_properties_pane() {
 }
 
 #[test]
+fn smoothing_section_exposes_post_correction() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = harness(0, 11);
+    h.run_steps(3);
+    assert_eq!(h.state().ui.brush_section, 11);
+    assert!(h.query_by_label("Post Correction").is_some());
+}
+
+#[test]
 fn smoothing_row_preserves_its_amount_and_options_across_toggles() {
     use egui_kittest::kittest::Queryable;
     let mut h = harness(0, 1);
@@ -690,7 +699,7 @@ fn smoothing_row_preserves_its_amount_and_options_across_toggles() {
     let before = h.state().session.tools.brush.smoothing.clone();
     h.run_steps(2);
     for enabled in [false, true] {
-        h.get_by_label("Smoothing").click();
+        h.get_by_label("Enable Smoothing").click();
         h.run_steps(3);
         let mut expected = before.clone();
         expected.enabled = enabled;
