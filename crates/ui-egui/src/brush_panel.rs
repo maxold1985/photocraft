@@ -45,11 +45,11 @@ pub const SECTIONS: [(&str, bool); 13] = [
     ("Protect Texture", true),
 ];
 
-/// The final five entries are switches, not sections with a properties pane.
+/// Noise, Wet Edges, Build-up and Protect Texture are switches. Smoothing has controls.
 const CHECKBOX_ONLY_START: usize = 8;
 
 fn checkbox_only(section: usize) -> bool {
-    (CHECKBOX_ONLY_START..SECTIONS.len()).contains(&section)
+    (CHECKBOX_ONLY_START..SECTIONS.len()).contains(&section) && section != 11
 }
 
 /// Panel width and the stroke strip's size.
@@ -347,9 +347,8 @@ fn settings_tab(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     let before = app.session.tools.brush.clone();
     let mut b = before.clone();
-    // Older UI state and control clients could select any of the 13 entries. Switch rows no
-    // longer have a properties pane, so those selections recover to Brush Tip Shape.
-    if app.ui.brush_section >= CHECKBOX_ONLY_START {
+    // Switch-only rows have no properties pane; Smoothing (11) does.
+    if checkbox_only(app.ui.brush_section) || app.ui.brush_section >= SECTIONS.len() {
         app.ui.brush_section = 0;
     }
     let section = app.ui.brush_section;
