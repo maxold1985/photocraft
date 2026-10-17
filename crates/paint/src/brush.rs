@@ -436,11 +436,13 @@ pub struct Smoothing {
     pub catch_up_on_end: bool,
     /// Divide the string length by the view zoom (the command's `zoom` param).
     pub adjust_for_zoom: bool,
+    /// Geometry correction after stroke completion, 0..100.
+    pub post_correction: f32,
 }
 
 impl Default for Smoothing {
     fn default() -> Self {
-        Self { amount: 0.0, pulled_string: false, catch_up: true, catch_up_on_end: true, adjust_for_zoom: true }
+        Self { amount: 0.0, pulled_string: false, catch_up: true, catch_up_on_end: true, adjust_for_zoom: true, post_correction: 0.0 }
     }
 }
 

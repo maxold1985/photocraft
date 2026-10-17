@@ -570,6 +570,10 @@ fn pose(ui: &mut egui::Ui, b: &mut BrushSettings) {
 fn smoothing(ui: &mut egui::Ui, b: &mut BrushSettings) {
     let s = &mut b.smoothing;
     pct(ui, tl!("Smoothing"), &mut s.amount, 1.0);
+    ui.horizontal(|ui| {
+        ui.label("Post Correction");
+        ui.add(egui::Slider::new(&mut s.post_correction, 0.0..=100.0).suffix(" %"));
+    });
     widgets::checkbox(ui, &mut s.pulled_string, tl!("Pulled String Mode"));
     widgets::checkbox(ui, &mut s.catch_up, tl!("Stroke Catch-up"));
     widgets::checkbox(ui, &mut s.catch_up_on_end, tl!("Catch-up on Stroke End"));

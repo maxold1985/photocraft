@@ -24,6 +24,7 @@ pub mod dynamics;
 pub mod mixer;
 pub mod presets;
 pub mod procedural;
+pub mod post_correction;
 pub mod render;
 pub mod replace;
 pub mod retouch;
