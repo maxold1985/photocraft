@@ -450,6 +450,8 @@ pub struct Smoothing {
     pub enabled: bool,
     /// 0..1.
     pub amount: f32,
+    /// 0..1. Geometric correction applied after pen-up; independent of live smoothing.
+    pub post_correction: f32,
     /// Lazy-mouse: paint only when the pointer pulls a string of `amount × 100 px` taut.
     pub pulled_string: bool,
     /// Keep catching up with the pointer while it pauses (uses point timestamps).
