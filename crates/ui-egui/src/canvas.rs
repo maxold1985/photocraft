@@ -851,6 +851,16 @@ fn pointer_moves(events: &[egui::Event], button: egui::PointerButton, down_at_st
     out
 }
 
+/// Windows Ink emits Touch events for pen samples, but the mouse also emits
+/// PointerMoved events. While a pen contact owns the stroke, use only the
+/// contact's positions; otherwise moving the mouse draws diagonal connectors.
+fn windows_pen_moves(events: &[egui::Event]) -> Vec<Pos2> {
+    events.iter().filter_map(|e| match e {
+        egui::Event::Touch { phase: egui::TouchPhase::Start | egui::TouchPhase::Move, pos, .. } => Some(*pos),
+        _ => None,
+    }).collect()
+}
+
 /// Modifiers attached to the pointer event itself. Some input sources provide these without a
 /// separate `ModifiersChanged` event, so use them for click gestures before falling back to the
 /// frame-wide modifier state.
@@ -3645,7 +3655,12 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
             };
             let press_this_frame = events.iter().any(|e| matches!(e, egui::Event::PointerButton { button: b, pressed: true, .. } if *b == button));
             let down_at_start = !press_this_frame && (gesture_active_before || buttons.started);
-            let mut positions = if freehand_tool(tool) {
+            let pen_owns_stroke = cfg!(target_os = "windows")
+                && app.stylus.windows_pen_contact_frame()
+                && freehand_tool(tool);
+            let mut positions = if pen_owns_stroke {
+                windows_pen_moves(&events)
+            } else if freehand_tool(tool) {
                 pointer_moves(&events, button, down_at_start)
             } else if buttons.dragged {
                 response.interact_pointer_pos().into_iter().collect()
@@ -3654,7 +3669,7 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
             };
             // A frame with no raw move still tracks a held gesture (a still pointer, a modifier
             // change): fall back to the latest position, as the old code always did.
-            if positions.is_empty()
+            if !pen_owns_stroke && positions.is_empty()
                 && (buttons.dragged || press_stroke_moving)
                 && let Some(p) = response.interact_pointer_pos().or(ui.input(|i| i.pointer.latest_pos()))
             {
