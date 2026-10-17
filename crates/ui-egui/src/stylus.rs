@@ -246,6 +246,12 @@ impl Stylus {
         self.peak = self.frame.iter().fold(self.peak, |m, s| m.max(s.pressure));
     }
 
+    /// Windows Ink pen contact is active (or ended in this input frame).
+    /// Mouse CursorMoved events must not be mixed into this pen stroke.
+    pub(crate) fn windows_pen_contact_frame(&self) -> bool {
+        self.touch_pen && (!self.contacts.is_empty() || self.lifted)
+    }
+
     /// The pen's current sample. When the pen touched during this frame but has lifted since
     /// (the feed is cleared or back at pressure 0 by the time the UI runs, as for a tap shorter
     /// than a frame), the frame's last contact sample: never full pressure as for a mouse, and
