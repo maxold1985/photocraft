@@ -257,7 +257,24 @@ fn stroke_with(s: &mut Session, p: &Value, label: &str, brush: BrushSettings, pt
     let bg = s.tools.background;
     let fg = brush.color;
     let symmetry = s.active().and_then(|st| st.symmetry.clone());
-    let (id, brush, zoom) = stroke_target(s, p, brush)?;
+    let (id, mut brush, zoom) = stroke_target(s, p, brush)?;
+    // Post Correction runs exactly once, on pen-up/command commit, before symmetry.
+    // LiveStroke remains a fast raw preview; the committed document is rebuilt from
+    // its original pixels, not painted over that preview.
+    let pts = if brush.smoothing.post_correction > 0.0 {
+        let corrected = photocraft_paint::post_correction::correct_stroke(
+            &pts,
+            photocraft_paint::post_correction::CorrectionSettings {
+                intensity: brush.smoothing.post_correction,
+                ..Default::default()
+            },
+        );
+        // The geometry is already corrected; avoid a second correction in render_stroke.
+        brush.smoothing.post_correction = 0.0;
+        corrected
+    } else {
+        pts
+    };
     let cmyk = doc_cmyk_space(s);
     let dmg = photocraft_color::convert::with_cmyk_space(cmyk.as_ref(), || {
         s.edit(label, |doc, _| {
