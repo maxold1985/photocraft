@@ -786,7 +786,19 @@ pub fn render_stroke(
     }
     let pre = target.clone();
     let mut r = StrokeRenderer::new(brush, Some(target.format()), zoom);
-    r.push(points);
+    // Batch path: correct the point geometry before rendering brush dabs.
+    let corrected = if brush.smoothing.post_correction > 0.0 {
+        Some(crate::post_correction::correct_stroke(
+            points,
+            crate::post_correction::CorrectionSettings {
+                intensity: brush.smoothing.post_correction,
+                ..Default::default()
+            },
+        ))
+    } else {
+        None
+    };
+    r.push(corrected.as_deref().unwrap_or(points));
     r.finish();
     r.composite(&pre, target, selection, lock_transparency, true)
 }
