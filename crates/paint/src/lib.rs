@@ -25,6 +25,7 @@ pub mod dynamics;
 pub mod mixer;
 pub mod outline;
 pub mod presets;
+pub mod post_correction;
 pub mod procedural;
 pub mod render;
 pub mod replace;
