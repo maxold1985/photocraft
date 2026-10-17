@@ -2,7 +2,7 @@ name: Windows 10 x64 build
 
 on:
   push:
-    branches: [main, feature/post-correction]
+    branches: [main, feature/post-correction, integration/upstream-post-correction]
   pull_request:
     branches: [main]
   workflow_dispatch:
