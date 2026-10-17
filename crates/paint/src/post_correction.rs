@@ -48,7 +48,7 @@ pub fn resample(points:&[StrokePoint],spacing:f64)->Vec<StrokePoint>{
         let t=((target-s[j-1])/(s[j]-s[j-1])).clamp(0.0,1.0);
         result.push(interp(clean[j-1],clean[j],t));target+=spacing;
     }
-    result.push(*clean[clean.len()-1]);result
+    result.push(clean[clean.len()-1]);result
 }
 pub fn corners(p:&[StrokePoint],threshold:f64)->Vec<bool>{
     let n=p.len();let mut out=vec![false;n];if n==0{return out;}
