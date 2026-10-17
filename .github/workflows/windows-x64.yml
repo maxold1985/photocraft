@@ -1,0 +1,48 @@
+name: Windows 10 x64 build
+
+on:
+  push:
+    branches: [main, feature/post-correction, integration/upstream-post-correction]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-x64:
+    name: Windows x64 (Windows 10 compatible)
+    runs-on: windows-2022
+    timeout-minutes: 90
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable (MSVC x64)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Compile PhotoCraft Windows x64
+        run: cargo build --release -p photocraft --target x86_64-pc-windows-msvc --locked
+
+      - name: Verify executable
+        shell: pwsh
+        run: |
+          $exe = "target/x86_64-pc-windows-msvc/release/photocraft.exe"
+          if (!(Test-Path $exe)) { throw "PhotoCraft executable not found: $exe" }
+          Get-Item $exe | Select-Object Name, Length
+
+      - name: Upload Windows x64 executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: PhotoCraft-Windows-x64
+          path: target/x86_64-pc-windows-msvc/release/photocraft.exe
+          if-no-files-found: error
+          retention-days: 14
