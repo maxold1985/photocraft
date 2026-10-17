@@ -5090,7 +5090,34 @@ pub(crate) fn composite_color(app: &mut PhotocraftApp, x: f64, y: f64) -> Option
 /// The body of a `Move` for every tool: tracked position, ⇧ constraint, the moving layer, and so
 /// on. It does not feed the live stroke, so the canvas can push a whole frame's recovered samples
 /// and update the live stroke once (see `canvas_view`).
+/// Diagnostic workaround for isolated, alternating tablet coordinate spikes.
+/// Opt in with PHOTOCRAFT_PEN_SPIKE_GUARD=1; does not affect normal input by default.
+fn reject_pen_spike(app: &PhotocraftApp, x: f64, y: f64) -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if !*ENABLED.get_or_init(|| std::env::var("PHOTOCRAFT_PEN_SPIKE_GUARD").is_ok_and(|v| v == "1")) {
+        return false;
+    }
+    if !matches!(app.active_tool(), Tool::Brush | Tool::Pencil | Tool::Eraser) {
+        return false;
+    }
+    let Some(d) = app.drag.as_ref() else { return false };
+    let Some(last) = d.points.last() else { return false };
+    // Document coordinates: large jumps that immediately return to the previous
+    // trajectory are characteristic of duplicate/incorrect tablet input.
+    // This is a temporary safety guard, not a substitute for fixing WM_POINTER.
+    let threshold = 250.0 / f64::from(app.point_zoom().max(0.1));
+    let distance = (x - last[0]).hypot(y - last[1]);
+    if distance > threshold {
+        eprintln!("[pen-input] SPIKE_REJECTED x={x:.2} y={y:.2} from=({:.2},{:.2}) distance={distance:.2} threshold={threshold:.2}", last[0], last[1]);
+        return true;
+    }
+    false
+}
+
 fn tool_move(app: &mut PhotocraftApp, x: f64, y: f64, pressure: f32, mods: egui::Modifiers) {
+    if reject_pen_spike(app, x, y) {
+        return;
+    }
     let tool = app.active_tool();
     if tool.is_type() && app.drag.is_none() {
         crate::type_tool::pointer_move(app, x, y);
