@@ -48,7 +48,7 @@ pub fn resample(points:&[StrokePoint],spacing:f64)->Vec<StrokePoint>{
         let t=((target-s[j-1])/(s[j]-s[j-1])).clamp(0.0,1.0);
         result.push(interp(clean[j-1],clean[j],t));target+=spacing;
     }
-    result.push(*clean.last().unwrap());result
+    result.push(*clean[clean.len()-1]);result
 }
 pub fn corners(p:&[StrokePoint],threshold:f64)->Vec<bool>{
     let n=p.len();let mut out=vec![false;n];if n==0{return out;}
@@ -190,9 +190,9 @@ mod tests{
     #[test] fn endpoints_and_pressure(){
         let p:Vec<_>=(0..50).map(|i|StrokePoint::new(i as f64,if i%2==0{0.0}else{2.0},i as f32/49.0)).collect();
         let r=correct_stroke(&p,CorrectionSettings::default());
-        assert_eq!(r.first().unwrap().x,p[0].x);
-        assert_eq!(r.last().unwrap().x,p.last().unwrap().x);
-        assert!((r.last().unwrap().pressure-1.0).abs()<0.001);
+        assert_eq!(r[0].x,p[0].x);
+        assert_eq!(r[r.len()-1].x,p[p.len()-1].x);
+        assert!((r[r.len()-1].pressure-1.0).abs()<0.001);
     }
     #[test] fn zero_intensity_unchanged(){
         let p=vec![StrokePoint::new(1.0,2.0,0.5);3];
