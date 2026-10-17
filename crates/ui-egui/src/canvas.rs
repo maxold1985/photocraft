@@ -5105,7 +5105,11 @@ fn reject_pen_spike(app: &PhotocraftApp, x: f64, y: f64) -> bool {
     // Document coordinates: large jumps that immediately return to the previous
     // trajectory are characteristic of duplicate/incorrect tablet input.
     // This is a temporary safety guard, not a substitute for fixing WM_POINTER.
-    let threshold = 250.0 / f64::from(app.point_zoom().max(0.1));
+    // The Huion trace contains repeated false jumps of 300-430 document pixels,
+    // which passed the previous 250-screen-pixel threshold at this zoom.
+    // A 64-screen-pixel continuity gate catches these without depending on canvas zoom.
+    // Keep the opt-in flag until the underlying Windows event source is identified.
+    let threshold = 64.0 / f64::from(app.point_zoom().max(0.1));
     let distance = (x - last[0]).hypot(y - last[1]);
     if distance > threshold {
         eprintln!("[pen-input] SPIKE_REJECTED x={x:.2} y={y:.2} from=({:.2},{:.2}) distance={distance:.2} threshold={threshold:.2}", last[0], last[1]);
