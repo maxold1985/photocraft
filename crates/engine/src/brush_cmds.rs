@@ -267,11 +267,28 @@ fn stroke_with(s: &mut Session, cmd: &str, p: &Value, label: &str, brush: BrushS
     let bg = s.tools.background;
     let fg = brush.color;
     let symmetry = s.active().and_then(|st| st.symmetry.clone());
-    let (id, brush, zoom) = stroke_target(s, p, brush)?;
+    let (id, mut brush, zoom) = stroke_target(s, p, brush)?;
+    // Post Correction runs at pen-up. The live preview must not be reused because
+    // it contains uncorrected dabs; the command re-renders from original pixels.
+    let post_correction = brush.smoothing.post_correction > 0.0;
+    let original_pts = pts;
+    let pts = if post_correction {
+        let corrected = photocraft_paint::post_correction::correct_stroke(
+            &original_pts,
+            photocraft_paint::post_correction::CorrectionSettings {
+                intensity: brush.smoothing.post_correction,
+                ..Default::default()
+            },
+        );
+        brush.smoothing.post_correction = 0.0;
+        corrected
+    } else {
+        original_pts.clone()
+    };
     let cmyk = doc_cmyk_space(s);
     // The live stroke the canvas already rendered for exactly these params: take its pixels
     // instead of rendering the whole stroke again (the hitch at pen-up).
-    let live = s.live_commit.take().filter(|l| l.matches(s, cmd, p, &pts));
+    let live = s.live_commit.take().filter(|l| !post_correction && l.matches(s, cmd, p, &original_pts));
     let from_live = live.is_some();
     let dmg = photocraft_color::convert::with_cmyk_space(cmyk.as_ref(), || {
         s.edit(label, |doc, _| {
